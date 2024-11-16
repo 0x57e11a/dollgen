@@ -1,0 +1,9 @@
+[package]
+name = "dollgen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+liquid = "0.26.9"
+toml = "0.8.19"
+serde = "1.0.214"
