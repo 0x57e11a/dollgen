@@ -15,10 +15,13 @@ pub mod liquid;
 #[cfg(feature = "scss")]
 pub mod scss;
 
+#[cfg(feature = "wasm")]
+pub mod wasm;
+
 pub struct Rule<'a> {
 	pub include: &'a [Pattern],
 	pub exclude: &'a [Pattern],
-	pub dst: &'a str,
+	pub dst: &'static str,
 	pub transformer: &'a mut dyn FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>,
 }
 
@@ -173,9 +176,13 @@ pub enum ErrorKind {
 
 	#[cfg(feature = "scss")]
 	#[error("scss integration failed")]
-	SCSSIntegration(#[from] grass::Error),
+	SCSSIntegration(#[from] ::grass::Error),
+
+	#[cfg(feature = "wasm")]
+	#[error("wasm integration failed")]
+	WASMIntegration(#[from] wasm::WASMErrorKind),
 
 	// misc
 	#[error(transparent)]
-	Other(anyhow::Error),
+	Other(::anyhow::Error),
 }
