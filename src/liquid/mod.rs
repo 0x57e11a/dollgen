@@ -5,6 +5,7 @@ use {
 	::liquid::{object, Parser, ParserBuilder, Template},
 	::serde::Deserialize,
 	::std::{
+		ffi::OsStr,
 		fs::{self, OpenOptions},
 		path::{Path, PathBuf},
 		rc::Rc,
@@ -48,18 +49,34 @@ impl Liquid {
 	}
 }
 
+#[derive(Deserialize, Debug)]
+struct Frontmatter {
+	pub template: Option<FrontmatterTemplate>,
+	pub props: Option<liquid::Object>,
+}
+
+#[derive(Deserialize, Debug)]
+struct FrontmatterTemplate {
+	pub path: PathBuf,
+	#[serde(default)]
+	pub local: bool,
+}
+
+fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) -> PathBuf {
+	let mut new = path.extension().unwrap_or_default().to_os_string();
+	if path.extension().is_some() {
+		new.push(".");
+	}
+	new.push(extension);
+	path.with_extension(new)
+}
+
 pub fn create_template(
 	template: PathBuf,
 	liquid: Rc<RefCell<Liquid>>,
 	mut lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
 ) -> Result<impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>, ErrorKind> {
-	Ok(move |src, dst, _| {
-		#[derive(Deserialize, Debug)]
-		struct Frontmatter {
-			pub template: Option<PathBuf>,
-			pub props: Option<liquid::Object>,
-		}
-
+	Ok(move |src: PathBuf, dst, _| {
 		let content = fs::read_to_string(&src)?;
 
 		let (frontmatter, body) = lang(&content)?;
@@ -67,9 +84,28 @@ pub fn create_template(
 		let frontmatter =
 			from_str::<Frontmatter>(&frontmatter).map_err(LiquidErrorKind::FrontmatterParsing)?;
 
+		let template = if let Some(template) = frontmatter.template {
+			with_added_extension_but_stable(
+				&if template.local {
+					if template.path.is_absolute() {
+						return Err(
+							LiquidErrorKind::FrontmatterAbsoluteLocalPath(template.path).into()
+						);
+					}
+
+					src.parent().unwrap().join(template.path)
+				} else {
+					template.path
+				},
+				"liquid",
+			)
+		} else {
+			template.clone()
+		};
+
 		liquid
 			.borrow_mut()
-			.parse(frontmatter.template.as_deref().unwrap_or(&*template))?
+			.parse(&template)?
 			.render_to(
 				&mut OpenOptions::new()
 					.create(true)
@@ -103,6 +139,9 @@ pub enum LiquidErrorKind {
 
 	#[error("frontmatter error")]
 	FrontmatterParsing(#[from] ::toml::de::Error),
+
+	#[error("frontmatter asks for a local template, but provides an absolute path")]
+	FrontmatterAbsoluteLocalPath(PathBuf),
 
 	#[cfg(feature = "liquid-markdoll")]
 	#[error("markdoll failed")]
