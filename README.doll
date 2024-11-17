@@ -1,0 +1,39 @@
+&dollgen
+	dollgen is a relatively simple Static Site Generator, intended to be unbiased towards what you choose to write your site in
+	(by default, it doesn't have [em:any] language-specific features)
+	
+	&rules
+		the core of dollgen is simple, define rules with the following:
+		-	included paths[ref(glob)]
+		-	excluded paths[ref(glob)]
+		-	output path[ref(format)] (recieves captures from the include glob that matched)
+		-	transformer the reads the input file and writes the output file
+
+		[def(glob)::
+			globs follow the syntax of [link(https://crates.io/crates/capturing-glob):capturing-glob]
+			
+			all paths are relative to the current working directory
+		]
+
+		[def(format)::
+			format strings follow a similar syntax to rust's format strings, but simpler
+
+			given a list of captures, [code:{n}] is replaced with the [code:n]-th capture
+
+			given rule with an include [code:src/(**)/(*).draft.*)],
+			matching path [code:src/blog/itsfirstblog.draft.doll],
+			format string [code:dist/{0}/{1}.html]
+			would produce [code:dist/blog/itsfirstblog.html]
+		]
+
+	&integrations
+		currently present
+		-	liquid (feature: [code:liquid], support for [link(https://shopify.github.io/liquid/):the liquid templating language])
+			-	markdoll (feature: [code:liquid-markdoll], support for [link(https://github.com/0x57e11a/markdoll):the markdoll language], tied into liquid)
+		-	scss (feature: [code:scss], support for [link(https://sass-lang.com/documentation/syntax/):the scss/sass stylesheet languages])
+
+		planned
+		-	markdown
+		-	maybe MDX?
+		-	maybe reStructuredText? (if it wants to subject itself to that?)
+		-	at this point just make an issue for what you want

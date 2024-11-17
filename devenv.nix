@@ -1,5 +1,6 @@
 { pkgs, lib, config, inputs, ... }: {
-	packages = [ pkgs.git ];
+	packages = with pkgs; [ git ];
 
 	languages.rust.enable = true;
+	languages.rust.channel = "nightly";
 }
