@@ -57,7 +57,7 @@ struct Frontmatter {
 
 #[derive(Deserialize, Debug)]
 struct FrontmatterTemplate {
-	pub path: PathBuf,
+	pub path: Option<PathBuf>,
 	#[serde(default)]
 	pub local: bool,
 }
@@ -72,7 +72,7 @@ fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) ->
 }
 
 pub fn create_template(
-	template: PathBuf,
+	default_template: PathBuf,
 	liquid: Rc<RefCell<Liquid>>,
 	mut lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
 ) -> Result<impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>, ErrorKind> {
@@ -87,20 +87,26 @@ pub fn create_template(
 		let template = if let Some(template) = frontmatter.template {
 			with_added_extension_but_stable(
 				&if template.local {
-					if template.path.is_absolute() {
-						return Err(
-							LiquidErrorKind::FrontmatterAbsoluteLocalPath(template.path).into()
-						);
-					}
+					if let Some(path) = template.path {
+						if path.is_absolute() {
+							return Err(LiquidErrorKind::FrontmatterAbsoluteLocalPath(path).into());
+						}
 
-					src.parent().unwrap().join(template.path)
+						src.parent().unwrap().join(path)
+					} else {
+						src.with_extension("")
+					}
 				} else {
-					template.path
+					if let Some(path) = template.path {
+						path
+					} else {
+						default_template.clone()
+					}
 				},
 				"liquid",
 			)
 		} else {
-			template.clone()
+			default_template.clone()
 		};
 
 		liquid
