@@ -6,6 +6,7 @@ use {
 
 pub extern crate ariadne;
 pub extern crate hashbrown;
+pub extern crate markdoll;
 
 pub fn create(
 	mut doll: MarkDoll,
