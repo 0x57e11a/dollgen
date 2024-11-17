@@ -4,7 +4,6 @@ use {
 	::serde::Deserialize,
 	::std::{
 		fs,
-		io::{stderr, Write},
 		path::{Path, PathBuf},
 		process::Command,
 	},
@@ -36,7 +35,12 @@ pub fn create_wasm_with_bindings(
 		.name
 		.to_case(::convert_case::Case::Snake);
 
-		let target_dir = Path::new("target").join(src_dir);
+		let out_name = dst
+			.file_stem()
+			.map(|oss| oss.to_str().ok_or(WASMErrorKind::NonUTF8PathCharacters))
+			.unwrap_or(Ok("module"))?;
+
+		let target_dir = Path::new("target/dollgen").join(src_dir);
 
 		// build
 		{
@@ -90,7 +94,7 @@ pub fn create_wasm_with_bindings(
 						.ok_or(WASMErrorKind::NonUTF8PathCharacters)?,
 				)
 				.arg("--out-name")
-				.arg("out")
+				.arg(out_name)
 				.arg(
 					target_dir
 						.join("wasm32-unknown-unknown")
@@ -116,10 +120,8 @@ pub fn create_wasm_with_bindings(
 
 		let js = PathBuf::from(format(&js, &cap)?);
 
-		fs::copy(bindgen_dir.join("out_bg.wasm"), &dst)?;
-		fs::copy(bindgen_dir.join("out.js"), &js)?;
-
-		println!("wasm+bind {src_dir:?} -> {target_dir:?} / {crate_name} -> {dst:?} + {js:?}");
+		fs::copy(bindgen_dir.join(format!("{out_name}_bg.wasm")), &dst)?;
+		fs::copy(bindgen_dir.join(format!("{out_name}.js")), &js)?;
 
 		Ok(())
 	}
