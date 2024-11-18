@@ -20,6 +20,91 @@ struct ManifestPackage {
 	pub name: String,
 }
 
+fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorKind> {
+	let src_dir = manifest.parent().unwrap();
+
+	let crate_name = ::toml::from_str::<Manifest>(
+		&fs::read_to_string(&manifest).map_err(WASMErrorKind::FailedManifestRead)?,
+	)
+	.map_err(WASMErrorKind::BadManifest)?
+	.package
+	.name
+	.to_case(::convert_case::Case::Snake);
+
+	let target_dir = Path::new("target/dollgen").join(src_dir);
+
+	// build
+	{
+		let mut command = Command::new("cargo");
+
+		command
+			.arg("build")
+			.arg("--manifest-path")
+			.arg(
+				src_dir
+					.join("Cargo.toml")
+					.to_str()
+					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
+			)
+			.arg("--target-dir")
+			.arg(
+				target_dir
+					.to_str()
+					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
+			)
+			.arg("--target")
+			.arg("wasm32-unknown-unknown");
+
+		if release {
+			command.arg("--release");
+		}
+
+		let out = command
+			.output()
+			.map_err(WASMErrorKind::BuildProcessFailed)?;
+
+		if !out.status.success() {
+			return Err(WASMErrorKind::BuildFailed(
+				String::from_utf8(out.stderr).map_err(WASMErrorKind::NonUTF8Output)?,
+			)
+			.into());
+		}
+	}
+
+	// bindgen
+	{
+		let mut bindgen = Bindgen::new();
+
+		bindgen
+			.out_name(&crate_name)
+			.input_path(
+				target_dir
+					.join("wasm32-unknown-unknown")
+					.join(if release { "release" } else { "debug" })
+					.join(&crate_name)
+					.with_extension("wasm")
+					.to_str()
+					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
+			)
+			.web(true)
+			.map_err(WASMErrorKind::BindgenFailed)?
+			.debug(!release)
+			.keep_debug(!release)
+			.typescript(true);
+
+		bindgen
+			.generate(
+				target_dir
+					.join("bindgen")
+					.to_str()
+					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
+			)
+			.map_err(WASMErrorKind::BindgenFailed)?;
+	}
+
+	Ok((target_dir.join("bindgen"), crate_name))
+}
+
 /// compile rust libraries to wasm and include bindings
 ///
 /// - `release` - whether to compile in release mode
@@ -31,99 +116,56 @@ pub fn create_wasm_with_bindings(
 	release: bool,
 	js: &'static str,
 ) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
-	move |src, dst, cap| {
-		let src_dir = src.parent().ok_or(WASMErrorKind::NoParent)?;
+	move |src_file, dst_file, cap| {
+		let (bindgen_dir, crate_name) = compile(src_file.with_file_name("Cargo.toml"), release)?;
 
-		let crate_name = ::toml::from_str::<Manifest>(
-			&fs::read_to_string(src_dir.join("Cargo.toml"))
-				.map_err(WASMErrorKind::FailedManifestRead)?,
-		)
-		.map_err(WASMErrorKind::BadManifest)?
-		.package
-		.name
-		.to_case(::convert_case::Case::Snake);
+		fs::copy(bindgen_dir.join(format!("{crate_name}_bg.wasm")), &dst_file)?;
 
-		let out_name = dst
-			.file_stem()
-			.map(|oss| oss.to_str().ok_or(ErrorKind::NonUTF8PathCharacters))
-			.unwrap_or(Ok("module"))?;
+		let js_file = &PathBuf::from(format(&js, &cap)?);
+		fs::create_dir_all(js_file.parent().unwrap())?;
+		fs::copy(bindgen_dir.join(format!("{crate_name}.js")), js_file)?;
 
-		let target_dir = Path::new("target/dollgen").join(src_dir);
+		Ok(())
+	}
+}
 
-		// build
-		{
-			let mut command = Command::new("cargo");
+/// compile rust libraries to wasm and output the typescript `.d.ts` declaration file for the js module
+///
+/// - `release` - whether to compile in release mode
+///
+/// [see module-level documentation for help](crate::wasm)
+pub fn create_typescript_declarations(
+	release: bool,
+) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
+	move |src_file, dst_file, _| {
+		let (bindgen_dir, crate_name) = compile(src_file.with_file_name("Cargo.toml"), release)?;
 
-			command
-				.arg("build")
-				.arg("--manifest-path")
-				.arg(
-					src_dir
-						.join("Cargo.toml")
-						.to_str()
-						.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-				)
-				.arg("--target-dir")
-				.arg(
-					target_dir
-						.to_str()
-						.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-				)
-				.arg("--target")
-				.arg("wasm32-unknown-unknown");
+		fs::copy(bindgen_dir.join(format!("{crate_name}.d.ts")), &dst_file)?;
 
-			if release {
-				command.arg("--release");
-			}
+		Ok(())
+	}
+}
 
-			let out = command
-				.output()
-				.map_err(WASMErrorKind::BuildProcessFailed)?;
+/// compile rust libraries to wasm and output the typescript `.d.ts` declaration file for the js module
+///
+/// - `release` - whether to compile in release mode
+///
+/// [see module-level documentation for help](crate::wasm)
+pub fn create_both(
+	release: bool,
+	js: &'static str,
+	d_ts: &'static str,
+) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
+	move |src_file, dst_file, cap| {
+		let (bindgen_dir, crate_name) = compile(src_file.with_file_name("Cargo.toml"), release)?;
 
-			if !out.status.success() {
-				return Err(WASMErrorKind::BuildFailed(
-					String::from_utf8(out.stderr).map_err(WASMErrorKind::NonUTF8Output)?,
-				)
-				.into());
-			}
-		}
-
-		// bindgen
-		{
-			let mut bindgen = Bindgen::new();
-
-			bindgen
-				.out_name(out_name)
-				.input_path(
-					target_dir
-						.join("wasm32-unknown-unknown")
-						.join(if release { "release" } else { "debug" })
-						.join(&crate_name)
-						.with_extension("wasm")
-						.to_str()
-						.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-				)
-				.web(true)
-				.map_err(WASMErrorKind::BindgenFailed)?
-				.debug(!release)
-				.keep_debug(!release);
-
-			bindgen
-				.generate(
-					target_dir
-						.join("bindgen")
-						.to_str()
-						.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-				)
-				.map_err(WASMErrorKind::BindgenFailed)?;
-		}
-
-		let bindgen_dir = target_dir.join("bindgen");
-
-		let js = PathBuf::from(format(&js, &cap)?);
-
-		fs::copy(bindgen_dir.join(format!("{out_name}_bg.wasm")), &dst)?;
-		fs::copy(bindgen_dir.join(format!("{out_name}.js")), &js)?;
+		fs::copy(bindgen_dir.join(format!("{crate_name}_bg.wasm")), &dst_file)?;
+		let js_file = &PathBuf::from(format(&js, &cap)?);
+		fs::create_dir_all(js_file.parent().unwrap())?;
+		fs::copy(bindgen_dir.join(format!("{crate_name}.js")), js_file)?;
+		let d_ts_file = &PathBuf::from(format(&d_ts, &cap)?);
+		fs::create_dir_all(d_ts_file.parent().unwrap())?;
+		fs::copy(bindgen_dir.join(format!("{crate_name}.d.ts")), d_ts_file)?;
 
 		Ok(())
 	}
@@ -132,10 +174,6 @@ pub fn create_wasm_with_bindings(
 /// an error while compiling wasm
 #[derive(::thiserror::Error, Debug)]
 pub enum WASMErrorKind {
-	/// selected file has no parent directory
-	#[error("selected file has no parent")]
-	NoParent,
-
 	/// unable to load Cargo.toml manifest
 	#[error("failed to read Cargo.toml manifest")]
 	FailedManifestRead(#[source] ::std::io::Error),

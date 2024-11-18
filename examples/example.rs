@@ -67,8 +67,8 @@ fn main() -> Result<(), anyhow::Error> {
 		Rule {
 			include: &[Pattern::new("src/(**)/.build-wasm")?],
 			exclude: &[],
-			dst: "dist/{0}_bg.wasm",
-			transformer: &mut dollgen::wasm::create_wasm_with_bindings(false, "dist/{0}.js"),
+			dst: "dist/{0}.wasm",
+			transformer: &mut dollgen::wasm::create_both(true, "dist/{0}.js", "gen_types/{0}.d.ts"),
 		},
 		Rule {
 			include: &[Pattern::new("src/(**)/(*).scss")?],
