@@ -54,6 +54,7 @@ fn main() -> Result<(), anyhow::Error> {
 			transformer: &mut dollgen::liquid::create(
 				Path::new("templates/page.liquid").to_path_buf(),
 				liquid.clone(),
+				dollgen::liquid::default_globals,
 				doll_lang.clone(),
 			)?,
 		},
@@ -74,9 +75,7 @@ fn main() -> Result<(), anyhow::Error> {
 			exclude: &[],
 			dst: "dist/{0}/{1}.css",
 			transformer: &mut scss::create(
-				scss::grass::Options::default()
-					.style(scss::grass::OutputStyle::Compressed)
-					.logger(scss::logger()),
+				scss::grass::Options::default().style(scss::grass::OutputStyle::Compressed),
 			),
 		},
 		Rule {

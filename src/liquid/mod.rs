@@ -2,7 +2,7 @@ use {
 	crate::ErrorKind,
 	::core::cell::RefCell,
 	::hashbrown::{hash_map::Entry, HashMap},
-	::liquid::{object, Parser, ParserBuilder, Template},
+	::liquid::{object, Object, Parser, ParserBuilder, Template},
 	::serde::Deserialize,
 	::std::{
 		ffi::OsStr,
@@ -85,12 +85,18 @@ fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) ->
 ///
 /// - `default_template` - the template to use when not overridden by a given source file
 /// - `liquid` - a shared cell of the liquid parser instance
-/// - `lang` - the source language to parse
+/// - `globals` - the globals to use in templating
+///   - takes the source file path, props from frontmatter, and compiled content from `lang`
+///   - returns the globals
 ///   
-///   recieves the file content and should return a tuple of (the frontmatter (unparsed), the content)
+///   if you don't have a purpose for this, you should probably set it to [`default_globals`]
+/// - `lang` - the source language to parse
+///   - takes the content of the source file
+///   - returns (frontmatter (unparsed), content)
 pub fn create(
 	default_template: PathBuf,
 	liquid: Rc<RefCell<Liquid>>,
+	mut globals: impl for<'a> FnMut(PathBuf, Option<Object>, String) -> Object,
 	mut lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
 ) -> Result<impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>, ErrorKind> {
 	Ok(move |src: PathBuf, dst, _| {
@@ -136,14 +142,19 @@ pub fn create(
 					.append(false)
 					.read(false)
 					.open(&dst)?,
-				&object!({
-					"content": body,
-					"props": frontmatter.props,
-				}),
+				&globals(src, frontmatter.props, body),
 			)
 			.map_err(|err| LiquidErrorKind::Liquid(err, Some(dst)))?;
 
 		Ok(())
+	})
+}
+
+/// the default globals creator, which passes `props` as the global `props` and `body` as the global `body`
+pub fn default_globals(_: PathBuf, props: Option<Object>, body: String) -> Object {
+	object!({
+		"body": body,
+		"props": props.unwrap_or_default(),
 	})
 }
 
