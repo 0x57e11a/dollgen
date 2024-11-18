@@ -1,4 +1,5 @@
-/target
+target
+dist
 
 .devenv*
 devenv.local.nix

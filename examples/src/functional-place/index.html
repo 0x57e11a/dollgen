@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+	<link href="/style.css" rel="stylesheet" />
+</head>
+
+<body>
+	<h1>functional place</h1>
+
+	<script type="module">
+		import init, { add } from './the-code.js';
+
+		async function run() {
+			await init("./the-code_bg.wasm");
+
+			document.write(`1 + 2 = ${add(1, 2)}`);
+		}
+
+		run();
+	</script>
+</body>
+
+</html>

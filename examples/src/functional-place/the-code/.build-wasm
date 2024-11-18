@@ -1,0 +1,3 @@
+the content of this file doesn't matter, it's just used to match paths to find out what libs to build
+
+as long as whatever matched file is a sibling to a Cargo.toml, you're all good

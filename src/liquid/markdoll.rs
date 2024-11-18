@@ -8,6 +8,7 @@ pub extern crate ariadne;
 pub extern crate hashbrown;
 pub extern crate markdoll;
 
+/// language support for markdoll
 pub fn create(
 	mut doll: MarkDoll,
 	code_block_format: HashMap<&'static str, fn(doll: &mut MarkDoll, emit: &mut HtmlEmit, &str)>,

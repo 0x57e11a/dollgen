@@ -8,6 +8,18 @@
 		-	excluded paths[ref(glob)]
 		-	output path[ref(format)] (recieves captures from the include glob that matched)
 		-	transformer the reads the input file and writes the output file
+			-	the most basic transformer is [code:copy], literally defined as
+				[codeblock(rust)::
+					pub fn copy(src: PathBuf, dst: PathBuf, _: Vec<String>) -> Result<(), ErrorKind> {
+						fs::copy(src, dst)?;
+						Ok(())
+					}
+				]
+			-	others may be created yourself or found in the [em:integrations] section
+		
+		although it's *recommended* to use [code:src/] for input files and [code:dist/] for output files,
+		dollgen does not care what directories you use, and will automatically create directories up to whatever
+		output path that a rule specifies
 
 		[def(glob)::
 			globs follow the syntax of [link(https://crates.io/crates/capturing-glob):capturing-glob]
@@ -27,10 +39,17 @@
 		]
 
 	&integrations
+		read more about integrations in their individual modules
+
 		currently present
-		-	liquid (feature: [code:liquid], support for [link(https://shopify.github.io/liquid/):the liquid templating language])
-			-	markdoll (feature: [code:liquid-markdoll], support for [link(https://github.com/0x57e11a/markdoll):the markdoll language], tied into liquid)
-		-	scss (feature: [code:scss], support for [link(https://sass-lang.com/documentation/syntax/):the scss/sass stylesheet languages])
+		-	[link(https://docs.rs/dollgen/latest/dollgen/liquid/):liquid]
+			(feature: [code:liquid], support for [link(https://shopify.github.io/liquid/):the liquid templating language])
+			-	[link(https://docs.rs/dollgen/latest/dollgen/liquid/markdoll/):liquid]
+				(feature: [code:liquid-markdoll], support for [link(https://github.com/0x57e11a/markdoll):the markdoll language], tied into liquid)
+		-	[link(https://docs.rs/dollgen/latest/dollgen/scss/):scss]
+			(feature: [code:scss], support for [link(https://sass-lang.com/documentation/syntax/):the scss/sass stylesheet languages])
+		-	[link(https://docs.rs/dollgen/latest/dollgen/wasm/):wasm]
+			(feature: [code:wasm], support for compiling rust libs to [link(https://webassembly.org/):webassembly modules], via [link(https://github.com/rustwasm/wasm-bindgen):wasm_bindgen])
 
 		planned
 		-	markdown

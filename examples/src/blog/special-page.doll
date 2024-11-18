@@ -1,0 +1,9 @@
+---
+[template]
+local = true
+
+[props.page]
+title = "normal page"
+---
+
+this page is special, because it uses a local template

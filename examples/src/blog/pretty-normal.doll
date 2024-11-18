@@ -1,0 +1,6 @@
+---
+[props.page]
+title = "normal page"
+---
+
+this page is normal, and derives from the blog template
