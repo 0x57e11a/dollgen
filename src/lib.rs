@@ -10,7 +10,7 @@ use {
 	::capturing_glob::{glob_with, MatchOptions},
 	::std::{
 		collections::HashSet,
-		fs::{self, create_dir_all},
+		fs,
 		path::{Path, PathBuf},
 	},
 	::strfmt::{strfmt_map, DisplayStr, FmtError, Formatter},
@@ -133,7 +133,12 @@ pub fn run(rules: &mut [Rule<'_>]) -> Result<(), Error> {
 					let dst_file = Path::new(&*dst_file);
 
 					// ensure the directory is there
-					create_dir_all(dst_file.parent().unwrap()).unwrap();
+					fs::create_dir_all(dst_file.parent().unwrap()).map_err(|err| Error {
+						kind: err.into(),
+						rule: rule_index,
+						include: include_index,
+						file: Some(src_file.to_path_buf()),
+					})?;
 
 					(rule.transformer)(src_file.to_path_buf(), dst_file.to_path_buf(), captures)
 						.map_err(|kind| Error {

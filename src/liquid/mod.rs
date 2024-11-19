@@ -81,6 +81,23 @@ fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) ->
 	path.with_extension(new)
 }
 
+/// the default globals for [`create_templated`], which passes `props` as the global `props` and `body` as the global `body`
+pub fn default_globals(_: PathBuf, props: Option<Object>, body: String) -> Object {
+	object!({
+		"body": body,
+		"props": props.unwrap_or_default(),
+	})
+}
+
+/// wraps a language parser so it can be easily shared between multiple rules
+pub fn shared_lang(
+	lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
+) -> impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind> + Clone {
+	let lang = Rc::new(RefCell::new(lang));
+
+	move |src| lang.borrow_mut()(src)
+}
+
 /// compile liquid templates + a source language
 ///
 /// - `default_template` - the template to use when not overridden by a given source file
@@ -93,13 +110,13 @@ fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) ->
 /// - `lang` - the source language to parse
 ///   - takes the content of the source file
 ///   - returns (frontmatter (unparsed), content)
-pub fn create(
+pub fn create_templated(
 	default_template: PathBuf,
 	liquid: Rc<RefCell<Liquid>>,
 	mut globals: impl for<'a> FnMut(PathBuf, Option<Object>, String) -> Object,
 	mut lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
-) -> Result<impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>, ErrorKind> {
-	Ok(move |src: PathBuf, dst, _| {
+) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
+	move |src: PathBuf, dst, _| {
 		let content = fs::read_to_string(&src)?;
 
 		let (frontmatter, body) = lang(&content)?;
@@ -147,24 +164,49 @@ pub fn create(
 			.map_err(|err| LiquidErrorKind::Liquid(err, Some(dst)))?;
 
 		Ok(())
-	})
+	}
 }
 
-/// the default globals creator, which passes `props` as the global `props` and `body` as the global `body`
-pub fn default_globals(_: PathBuf, props: Option<Object>, body: String) -> Object {
-	object!({
-		"body": body,
-		"props": props.unwrap_or_default(),
-	})
+/// compile liquid templates standalone
+///
+/// - `liquid` - a shared cell of the liquid parser instance
+/// - `globals` - the globals to use in templating
+///   - takes the source file path
+///   - returns the globals
+///   
+///   if you don't have a purpose for this, you should probably return [`Default::default`]
+pub fn create_standalone(
+	liquid: Rc<RefCell<Liquid>>,
+	mut globals: impl for<'a> FnMut(PathBuf) -> Object,
+) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
+	move |src: PathBuf, dst, _| {
+		liquid
+			.borrow_mut()
+			.parse(&src)?
+			.render_to(
+				&mut OpenOptions::new()
+					.create(true)
+					.write(true)
+					.append(false)
+					.read(false)
+					.open(&dst)?,
+				&globals(src),
+			)
+			.map_err(|err| LiquidErrorKind::Liquid(err, Some(dst)))?;
+
+		Ok(())
+	}
 }
 
-/// wraps a language parser so it can be easily shared between multiple rules
-pub fn shared_lang(
+/// renamed to [`create_templated`]
+#[deprecated = "renamed to create_templated"]
+pub fn create(
+	default_template: PathBuf,
+	liquid: Rc<RefCell<Liquid>>,
+	globals: impl for<'a> FnMut(PathBuf, Option<Object>, String) -> Object,
 	lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
-) -> impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind> + Clone {
-	let lang = Rc::new(RefCell::new(lang));
-
-	move |src| lang.borrow_mut()(src)
+) -> Result<impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>, ErrorKind> {
+	Ok(create_templated(default_template, liquid, globals, lang))
 }
 
 /// an error while using liquid templating

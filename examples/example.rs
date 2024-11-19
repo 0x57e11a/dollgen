@@ -51,12 +51,20 @@ fn main() -> Result<(), anyhow::Error> {
 			include: &[Pattern::new("src/(**)/(*).doll")?],
 			exclude: &[Pattern::new("**/*.draft.*")?],
 			dst: "dist/{0}/{1}.html",
-			transformer: &mut dollgen::liquid::create(
+			transformer: &mut dollgen::liquid::create_templated(
 				Path::new("templates/page.liquid").to_path_buf(),
 				liquid.clone(),
 				dollgen::liquid::default_globals,
 				doll_lang.clone(),
-			)?,
+			),
+		},
+		Rule {
+			include: &[Pattern::new("src/(**)/(*).page.liquid")?],
+			exclude: &[Pattern::new("**/*.draft.*")?],
+			dst: "dist/{0}/{1}.html",
+			transformer: &mut dollgen::liquid::create_standalone(liquid.clone(), |_| {
+				Default::default()
+			}),
 		},
 		Rule {
 			include: &[Pattern::new("src/(**)/(*).html")?],
