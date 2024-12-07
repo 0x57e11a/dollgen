@@ -1,6 +1,6 @@
 [package]
 name = "dollgen"
-version = "0.1.0"
+version = "0.2.0"
 authors = ["0x57e11a"]
 edition = "2021"
 description = "an unopinionated and extensible Static Site Generator, natively supporting liquid, markdoll, scss, and compiling rust to wasm"
@@ -20,7 +20,7 @@ anyhow = "1.0.93"
 liquid = { version = "0.26.9", optional = true }
 toml = { version = "0.8.19", optional = true }
 serde = { version = "1.0.214", optional = true }
-markdoll = { version = "2.0.1", features = ["ariadne"], optional = true }
+markdoll = { version = "3.0.3", features = ["ariadne"], optional = true }
 ariadne = { version = "0.4.1", optional = true }
 hashbrown = { version = "0.14.5", optional = true }
 grass = { version = "0.13.4", optional = true }

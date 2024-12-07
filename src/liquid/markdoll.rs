@@ -1,7 +1,7 @@
 use {
 	crate::{liquid::LiquidErrorKind, ErrorKind},
-	::hashbrown::HashMap,
 	::markdoll::{diagnostics::render, emit::HtmlEmit, MarkDoll},
+	::std::rc::Rc,
 };
 
 pub extern crate ariadne;
@@ -11,7 +11,7 @@ pub extern crate markdoll;
 /// language support for markdoll
 pub fn create(
 	mut doll: MarkDoll,
-	code_block_format: HashMap<&'static str, fn(doll: &mut MarkDoll, emit: &mut HtmlEmit, &str)>,
+	code_block_format: Rc<dyn Fn(&mut MarkDoll, &mut HtmlEmit, &str, &str)>,
 ) -> impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind> {
 	move |src| {
 		let mut cache = ariadne::Source::from(src);
@@ -20,7 +20,7 @@ pub fn create(
 			let mut to = HtmlEmit {
 				write: String::new(),
 				section_level: 0,
-				code_block_format: code_block_format.clone(),
+				code_block_format: Rc::clone(&code_block_format),
 			};
 
 			if doll.emit(&mut ast, &mut to) {

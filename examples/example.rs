@@ -16,7 +16,7 @@ use {
 		Pattern,
 		Rule,
 	},
-	::std::{env, fs, path::Path},
+	::std::{env, fs, path::Path, rc::Rc},
 };
 
 fn main() -> Result<(), anyhow::Error> {
@@ -39,9 +39,10 @@ fn main() -> Result<(), anyhow::Error> {
 		doll.ext_system.add_tags(markdoll::ext::table::tags());
 		doll.set_emitters(BuiltInEmitters::<HtmlEmit>::default());
 
-		let code_block_format = HashMap::new();
-
-		dollgen::liquid::shared_lang(dollgen::liquid::markdoll::create(doll, code_block_format))
+		dollgen::liquid::shared_lang(dollgen::liquid::markdoll::create(
+			doll,
+			Rc::new(|_, _, _, _| {}),
+		))
 	};
 
 	let liquid = Liquid::new(ParserBuilder::new().stdlib())?;

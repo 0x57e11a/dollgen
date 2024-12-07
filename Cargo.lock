@@ -245,7 +245,7 @@ checksum = "fea41bba32d969b513997752735605054bc0dfa92b4c56bf1189f2e174be7a10"
 
 [[package]]
 name = "dollgen"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "ariadne",
@@ -587,9 +587,9 @@ checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
 
 [[package]]
 name = "markdoll"
-version = "2.1.0"
+version = "3.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa999fd01e44c4e8bd563a79ea42f97d712f2b7d7346cf6130538fbbe611e665"
+checksum = "262c1c3dfa39a94afe681bab0376c241e1952b13572374e2cda4514e5efec16a"
 dependencies = [
  "ariadne",
  "downcast-rs",
