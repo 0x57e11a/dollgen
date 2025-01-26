@@ -1,5 +1,5 @@
 use {
-	crate::{format, ErrorKind},
+	crate::{format, ErrorKind, PlannedTransformation},
 	::convert_case::Casing,
 	::serde::Deserialize,
 	::std::{
@@ -7,6 +7,7 @@ use {
 		path::{Path, PathBuf},
 		process::Command,
 	},
+	::tracing::{debug_span, instrument, trace, trace_span, Level},
 	::wasm_bindgen_cli_support::Bindgen,
 };
 
@@ -20,6 +21,7 @@ struct ManifestPackage {
 	pub name: String,
 }
 
+#[instrument(level = Level::TRACE)]
 fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorKind> {
 	let src_dir = manifest.parent().unwrap();
 
@@ -35,17 +37,14 @@ fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorK
 
 	// build
 	{
+		let _trace_span = trace_span!("cargo build", ?manifest, ?target_dir).entered();
+
 		let mut command = Command::new("cargo");
 
 		command
 			.arg("build")
 			.arg("--manifest-path")
-			.arg(
-				src_dir
-					.join("Cargo.toml")
-					.to_str()
-					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-			)
+			.arg(manifest.to_str().ok_or(ErrorKind::NonUTF8PathCharacters)?)
 			.arg("--target-dir")
 			.arg(
 				target_dir
@@ -64,28 +63,31 @@ fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorK
 			.map_err(WASMErrorKind::BuildProcessFailed)?;
 
 		if !out.status.success() {
-			return Err(WASMErrorKind::BuildFailed(
-				String::from_utf8(out.stderr).map_err(WASMErrorKind::NonUTF8Output)?,
-			)
+			let stderr = String::from_utf8(out.stderr).unwrap();
+			return Err(WASMErrorKind::BuildFailed {
+				span: (0, stderr.len()),
+				stderr,
+			}
 			.into());
 		}
 	}
 
 	// bindgen
 	{
+		let input = target_dir
+			.join("wasm32-unknown-unknown")
+			.join(if release { "release" } else { "debug" })
+			.join(&crate_name)
+			.with_extension("wasm");
+		let bindgen_target = target_dir.join("bindgen");
+
+		let _trace_span = trace_span!("wasm-bindgen", ?input, ?bindgen_target).entered();
+
 		let mut bindgen = Bindgen::new();
 
 		bindgen
 			.out_name(&crate_name)
-			.input_path(
-				target_dir
-					.join("wasm32-unknown-unknown")
-					.join(if release { "release" } else { "debug" })
-					.join(&crate_name)
-					.with_extension("wasm")
-					.to_str()
-					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-			)
+			.input_path(input.to_str().ok_or(ErrorKind::NonUTF8PathCharacters)?)
 			.web(true)
 			.map_err(WASMErrorKind::BindgenFailed)?
 			.debug(!release)
@@ -94,15 +96,70 @@ fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorK
 
 		bindgen
 			.generate(
-				target_dir
-					.join("bindgen")
+				bindgen_target
 					.to_str()
 					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
 			)
-			.map_err(WASMErrorKind::BindgenFailed)?;
+			.map_err(|err| WASMErrorKind::BindgenFailed(err.into()))?;
 	}
 
 	Ok((target_dir.join("bindgen"), crate_name))
+}
+
+#[derive(Debug)]
+pub struct WASMPlan {
+	pub bindgen_dir: PathBuf,
+	pub crate_name: String,
+	pub kind: WASMPlanKind,
+}
+
+#[derive(Debug)]
+pub enum WASMPlanKind {
+	Wasm { js: PathBuf },
+	TypescriptDeclarations,
+	Both { js: PathBuf, d_ts: PathBuf },
+}
+
+impl PlannedTransformation for WASMPlan {
+	#[instrument(name = "wasm", level = Level::DEBUG)]
+	fn execute(self: Box<Self>, dst_file: PathBuf) -> Result<(), ErrorKind> {
+		match &self.kind {
+			WASMPlanKind::Wasm { js } | WASMPlanKind::Both { js, .. } => {
+				let from = self
+					.bindgen_dir
+					.join(format!("{}_bg.wasm", self.crate_name));
+				let to = &dst_file;
+				trace!(?from, ?to, ".wasm");
+				fs::copy(from, to)?;
+
+				let from = self.bindgen_dir.join(format!("{}.js", self.crate_name));
+				let to = js;
+				trace!(?from, ?to, ".js");
+				fs::create_dir_all(to.parent().unwrap())?;
+				fs::copy(from, to)?;
+			}
+			_ => {}
+		}
+
+		match &self.kind {
+			WASMPlanKind::TypescriptDeclarations => {
+				let from = self.bindgen_dir.join(format!("{}.d.ts", self.crate_name));
+				let to = &dst_file;
+				trace!(?from, ?to, ".d.ts");
+				fs::copy(from, to)?;
+			}
+			WASMPlanKind::Both { d_ts, .. } => {
+				let from = self.bindgen_dir.join(format!("{}.d.ts", self.crate_name));
+				let to = d_ts;
+				trace!(?from, ?to, ".d.ts");
+				fs::create_dir_all(to.parent().unwrap())?;
+				fs::copy(from, to)?;
+			}
+			_ => {}
+		}
+
+		Ok(())
+	}
 }
 
 /// compile rust libraries to wasm and include bindings
@@ -115,17 +172,19 @@ fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorK
 pub fn create_wasm_with_bindings(
 	release: bool,
 	js: &'static str,
-) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
-	move |src_file, dst_file, cap| {
+) -> impl FnMut(PathBuf, Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	move |src_file, cap| {
+		let _trace_span = debug_span!("wasm", ?release, ?js).entered();
+
 		let (bindgen_dir, crate_name) = compile(src_file.with_file_name("Cargo.toml"), release)?;
 
-		fs::copy(bindgen_dir.join(format!("{crate_name}_bg.wasm")), &dst_file)?;
-
-		let js_file = &PathBuf::from(format(&js, &cap)?);
-		fs::create_dir_all(js_file.parent().unwrap())?;
-		fs::copy(bindgen_dir.join(format!("{crate_name}.js")), js_file)?;
-
-		Ok(())
+		Ok(Box::new(WASMPlan {
+			bindgen_dir,
+			crate_name,
+			kind: WASMPlanKind::Wasm {
+				js: PathBuf::from(format(&js, &cap)?),
+			},
+		}))
 	}
 }
 
@@ -136,13 +195,17 @@ pub fn create_wasm_with_bindings(
 /// [see module-level documentation for help](crate::wasm)
 pub fn create_typescript_declarations(
 	release: bool,
-) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
-	move |src_file, dst_file, _| {
+) -> impl FnMut(PathBuf, Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	move |src_file, _| {
+		let _trace_span = debug_span!("typescript declarations", ?release).entered();
+
 		let (bindgen_dir, crate_name) = compile(src_file.with_file_name("Cargo.toml"), release)?;
 
-		fs::copy(bindgen_dir.join(format!("{crate_name}.d.ts")), &dst_file)?;
-
-		Ok(())
+		Ok(Box::new(WASMPlan {
+			bindgen_dir,
+			crate_name,
+			kind: WASMPlanKind::TypescriptDeclarations,
+		}))
 	}
 }
 
@@ -155,46 +218,61 @@ pub fn create_both(
 	release: bool,
 	js: &'static str,
 	d_ts: &'static str,
-) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
-	move |src_file, dst_file, cap| {
+) -> impl FnMut(PathBuf, Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	move |src_file, cap| {
+		let _trace_span = debug_span!("wasm + typescript declarations", ?release, ?js).entered();
+
 		let (bindgen_dir, crate_name) = compile(src_file.with_file_name("Cargo.toml"), release)?;
 
-		fs::copy(bindgen_dir.join(format!("{crate_name}_bg.wasm")), &dst_file)?;
-		let js_file = &PathBuf::from(format(&js, &cap)?);
-		fs::create_dir_all(js_file.parent().unwrap())?;
-		fs::copy(bindgen_dir.join(format!("{crate_name}.js")), js_file)?;
-		let d_ts_file = &PathBuf::from(format(&d_ts, &cap)?);
-		fs::create_dir_all(d_ts_file.parent().unwrap())?;
-		fs::copy(bindgen_dir.join(format!("{crate_name}.d.ts")), d_ts_file)?;
-
-		Ok(())
+		Ok(Box::new(WASMPlan {
+			bindgen_dir,
+			crate_name,
+			kind: WASMPlanKind::Both {
+				js: PathBuf::from(format(&js, &cap)?),
+				d_ts: PathBuf::from(format(&d_ts, &cap)?),
+			},
+		}))
 	}
 }
 
 /// an error while compiling wasm
-#[derive(::thiserror::Error, Debug)]
+#[derive(::thiserror::Error, ::miette::Diagnostic, Debug)]
 pub enum WASMErrorKind {
 	/// unable to load Cargo.toml manifest
 	#[error("failed to read Cargo.toml manifest")]
+	#[diagnostic(
+		code(dollgen::wasm::manifest::read),
+		help("the build file should be in the same directory as the manifest")
+	)]
 	FailedManifestRead(#[source] ::std::io::Error),
 
 	/// Cargo.toml manifest invalid
 	#[error("bad Cargo.toml manifest")]
+	#[diagnostic(code(dollgen::wasm::manifest::parse))]
 	BadManifest(#[source] ::toml::de::Error),
 
 	/// failed to run `cargo build``
-	#[error("failed to run cargo build")]
+	#[error("failed to run `cargo build`")]
+	#[diagnostic(
+		code(dollgen::wasm::build::process_fail),
+		help("is `cargo` on the PATH?")
+	)]
 	BuildProcessFailed(#[source] ::std::io::Error),
 
 	/// build failed
 	#[error("build failed")]
-	BuildFailed(String),
+	#[diagnostic(code(dollgen::wasm::build::fail), help("stderr provided"))]
+	BuildFailed {
+		/// the standard error output of the build
+		#[source_code]
+		stderr: String,
+		/// spans from the start to the end of `stderr`, used for miette diagnostics
+		#[label]
+		span: (usize, usize),
+	},
 
 	/// bindgen failed
 	#[error("bindgen failed")]
-	BindgenFailed(::anyhow::Error),
-
-	/// build output contains non-utf8 characters
-	#[error("non utf8 terminal output from build")]
-	NonUTF8Output(#[source] ::std::string::FromUtf8Error),
+	#[diagnostic(code(dollgen::wasm::bindgen::fail))]
+	BindgenFailed(#[source] ::anyhow::Error),
 }

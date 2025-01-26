@@ -6,6 +6,8 @@
 
 	<body>
 		<h1>standard page</h1>
-		{{ body }}
+		{% block body -%}
+			<p>no body</p>
+		{%- endblock body %}
 	</body>
 </html>

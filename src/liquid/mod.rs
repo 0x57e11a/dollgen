@@ -1,23 +1,17 @@
 use {
-	crate::ErrorKind,
+	crate::{util::with_added_extension_but_stable, ErrorKind, PlannedTransformation},
 	::core::cell::RefCell,
-	::hashbrown::{hash_map::Entry, HashMap},
-	::liquid::{object, Object, Parser, ParserBuilder, Template},
+	::hashbrown::{hash_map::EntryRef, HashMap},
+	::liquid::{object, Object, Parser, Template},
 	::serde::Deserialize,
 	::std::{
-		ffi::OsStr,
 		fs::{self, OpenOptions},
 		path::{Path, PathBuf},
 		rc::Rc,
 	},
 	::toml::from_str,
+	::tracing::{instrument, trace_span, Level},
 };
-
-/// [markdoll](https://codeberg.org/0x57e11a/markdoll) support
-///
-/// requires `liquid-markdoll` feature
-#[cfg(feature = "liquid-markdoll")]
-pub mod markdoll;
 
 pub extern crate liquid;
 
@@ -27,30 +21,39 @@ pub extern crate liquid;
 pub struct Liquid {
 	/// the parser
 	pub parser: Parser,
-	cache: HashMap<PathBuf, Template>,
+	cache: HashMap<PathBuf, Rc<Template>>,
 }
 
 impl Liquid {
 	/// create from a liquid parser builder
-	pub fn new(pb: ParserBuilder) -> Result<Rc<RefCell<Self>>, ErrorKind> {
-		Ok(Rc::new(RefCell::new(Self {
-			parser: pb
-				.build()
-				.map_err(|err| LiquidErrorKind::Liquid(err, None))?,
+	#[must_use]
+	pub fn new(parser: Parser) -> Rc<RefCell<Self>> {
+		Rc::new(RefCell::new(Self {
+			parser,
 			cache: HashMap::new(),
-		})))
+		}))
 	}
 
 	/// parse a template file or retrieve from cache
-	pub fn parse(&mut self, path: &Path) -> Result<&Template, ErrorKind> {
-		Ok(match self.cache.entry(path.to_path_buf()) {
-			Entry::Occupied(entry) => entry.into_mut(),
-			Entry::Vacant(entry) => entry.insert(
-				self.parser
-					.parse_file(path)
-					.map_err(|err| LiquidErrorKind::Liquid(err, Some(path.to_path_buf())))?,
-			),
-		})
+	pub fn parse(&mut self, path: &Path) -> Result<Rc<Template>, ErrorKind> {
+		Ok(match self.cache.entry_ref(path) {
+			EntryRef::Occupied(entry) => entry.into_mut(),
+			EntryRef::Vacant(entry) => {
+				entry.insert(Rc::new(self.parser.parse_file(path).map_err(|err| {
+					let source_code = match fs::read_to_string(path) {
+						Ok(src) => src,
+						Err(err) => return ErrorKind::Io(err),
+					};
+
+					ErrorKind::LiquidIntegration(LiquidErrorKind::LiquidParsing(
+						err,
+						path.to_path_buf(),
+						source_code,
+					))
+				})?))
+			}
+		}
+		.clone())
 	}
 
 	/// clear the cache
@@ -72,16 +75,8 @@ struct FrontmatterTemplate {
 	pub local: bool,
 }
 
-fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) -> PathBuf {
-	let mut new = path.extension().unwrap_or_default().to_os_string();
-	if path.extension().is_some() {
-		new.push(".");
-	}
-	new.push(extension);
-	path.with_extension(new)
-}
-
 /// the default globals for [`create_templated`], which passes `props` as the global `props` and `body` as the global `body`
+#[must_use]
 pub fn default_globals(_: PathBuf, props: Option<Object>, body: String) -> Object {
 	object!({
 		"body": body,
@@ -89,13 +84,29 @@ pub fn default_globals(_: PathBuf, props: Option<Object>, body: String) -> Objec
 	})
 }
 
-/// wraps a language parser so it can be easily shared between multiple rules
-pub fn shared_lang(
-	lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
-) -> impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind> + Clone {
-	let lang = Rc::new(RefCell::new(lang));
+/// a plan to render a liquid template
+#[::tyfling::debug(.globals)]
+pub struct LiquidPlan {
+	template: Rc<Template>,
+	globals: Object,
+}
 
-	move |src| lang.borrow_mut()(src)
+impl PlannedTransformation for LiquidPlan {
+	#[instrument(, name = "render liquid template", level = Level::DEBUG)]
+	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind> {
+		self.template
+			.render_to(
+				&mut OpenOptions::new()
+					.create(true)
+					.write(true)
+					.truncate(true)
+					.append(false)
+					.read(false)
+					.open(&dst)?,
+				&self.globals,
+			)
+			.map_err(|err| ErrorKind::LiquidIntegration(LiquidErrorKind::LiquidRendering(err, dst)))
+	}
 }
 
 /// compile liquid templates + a source language
@@ -114,12 +125,14 @@ pub fn create_templated(
 	default_template: PathBuf,
 	liquid: Rc<RefCell<Liquid>>,
 	mut globals: impl for<'a> FnMut(PathBuf, Option<Object>, String) -> Object,
-	mut lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
-) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
-	move |src: PathBuf, dst, _| {
+	mut lang: impl for<'a> FnMut(&'a str, &'a Path) -> Result<(String, String), ErrorKind>,
+) -> impl FnMut(PathBuf, Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	move |src: PathBuf, _| {
+		let _span = trace_span!("templated liquid", ?default_template).entered();
+
 		let content = fs::read_to_string(&src)?;
 
-		let (frontmatter, body) = lang(&content)?;
+		let (frontmatter, body) = lang(&content, &src)?;
 
 		let frontmatter =
 			from_str::<Frontmatter>(&frontmatter).map_err(LiquidErrorKind::FrontmatterParsing)?;
@@ -136,12 +149,10 @@ pub fn create_templated(
 					} else {
 						src.with_extension("")
 					}
+				} else if let Some(path) = template.path {
+					path
 				} else {
-					if let Some(path) = template.path {
-						path
-					} else {
-						default_template.clone()
-					}
+					default_template.clone()
 				},
 				"liquid",
 			)
@@ -149,21 +160,10 @@ pub fn create_templated(
 			default_template.clone()
 		};
 
-		liquid
-			.borrow_mut()
-			.parse(&template)?
-			.render_to(
-				&mut OpenOptions::new()
-					.create(true)
-					.write(true)
-					.append(false)
-					.read(false)
-					.open(&dst)?,
-				&globals(src, frontmatter.props, body),
-			)
-			.map_err(|err| LiquidErrorKind::Liquid(err, Some(dst)))?;
-
-		Ok(())
+		Ok(Box::new(LiquidPlan {
+			template: liquid.borrow_mut().parse(&template)?,
+			globals: globals(src, frontmatter.props, body),
+		}))
 	}
 }
 
@@ -178,56 +178,40 @@ pub fn create_templated(
 pub fn create_standalone(
 	liquid: Rc<RefCell<Liquid>>,
 	mut globals: impl for<'a> FnMut(PathBuf) -> Object,
-) -> impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind> {
-	move |src: PathBuf, dst, _| {
-		liquid
-			.borrow_mut()
-			.parse(&src)?
-			.render_to(
-				&mut OpenOptions::new()
-					.create(true)
-					.write(true)
-					.append(false)
-					.read(false)
-					.open(&dst)?,
-				&globals(src),
-			)
-			.map_err(|err| LiquidErrorKind::Liquid(err, Some(dst)))?;
+) -> impl FnMut(PathBuf, Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	move |src: PathBuf, _| {
+		let _span = trace_span!("standalone liquid").entered();
 
-		Ok(())
+		Ok(Box::new(LiquidPlan {
+			template: liquid.borrow_mut().parse(&src)?,
+			globals: globals(src),
+		}))
 	}
 }
 
-/// renamed to [`create_templated`]
-#[deprecated = "renamed to create_templated"]
-pub fn create(
-	default_template: PathBuf,
-	liquid: Rc<RefCell<Liquid>>,
-	globals: impl for<'a> FnMut(PathBuf, Option<Object>, String) -> Object,
-	lang: impl for<'a> FnMut(&'a str) -> Result<(String, String), ErrorKind>,
-) -> Result<impl FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>, ErrorKind> {
-	Ok(create_templated(default_template, liquid, globals, lang))
-}
-
 /// an error while using liquid templating
-#[derive(::thiserror::Error, Debug)]
+#[derive(::thiserror::Error, ::miette::Diagnostic, Debug)]
 pub enum LiquidErrorKind {
 	/// template parsing failed
-	#[error("template parsing failed")]
-	Liquid(#[source] ::liquid::Error, Option<PathBuf>),
+	#[error("template parsing failed for {}", .1.to_str().unwrap())]
+	#[diagnostic(code(dollgen::liquid::template_parse_failed))]
+	LiquidParsing(#[source] ::liquid::Error, PathBuf, #[source_code] String),
+
+	/// template rendering failed
+	#[error("template rendering failed for {}", .1.to_str().unwrap())]
+	#[diagnostic(code(dollgen::liquid::template_parse_failed))]
+	LiquidRendering(#[source] ::liquid::Error, PathBuf),
 
 	/// frontmatter parsing failed
 	#[error("frontmatter parsing failed")]
-	FrontmatterParsing(#[from] ::toml::de::Error),
+	#[diagnostic(code(dollgen::liquid::frontmatter_parse_failed))]
+	FrontmatterParsing(#[source] ::toml::de::Error),
 
-	/// frontmatter asks for a local template, but provides an absolute path
-	#[error("frontmatter asks for a local template, but provides an absolute path")]
+	/// frontmatter requests a local template, but provides an absolute path
+	#[error("frontmatter requests a local template, but provides an absolute path")]
+	#[diagnostic(
+		code(dollgen::liquid::frontmatter_absolute_local_path),
+		help("either change to a relative path or remove the local attribute")
+	)]
 	FrontmatterAbsoluteLocalPath(PathBuf),
-
-	/// markdoll error
-	///
-	/// requires `liquid-markdoll` feature
-	#[cfg(feature = "liquid-markdoll")]
-	#[error("markdoll failed")]
-	Markdoll(Vec<::markdoll::diagnostics::Diagnostic>),
 }

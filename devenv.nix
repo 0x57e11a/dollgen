@@ -1,5 +1,5 @@
 { pkgs, lib, config, inputs, ... }: {
-	packages = with pkgs; [ git ];
+	packages = with pkgs; [ git miniserve ];
 
 	languages.rust = {
 		enable = true;

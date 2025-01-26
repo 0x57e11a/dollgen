@@ -4,16 +4,19 @@
 	clippy::allow_attributes_without_reason,
 	missing_docs
 )]
+#![allow(clippy::missing_errors_doc, reason = "a lot of ")]
 
 pub use ::capturing_glob::{Entry, Pattern};
 use {
 	::capturing_glob::{glob_with, MatchOptions},
+	::miette::{Diagnostic, NamedSource, SourceSpan},
 	::std::{
 		collections::HashSet,
 		fs,
 		path::{Path, PathBuf},
 	},
 	::strfmt::{strfmt_map, DisplayStr, FmtError, Formatter},
+	::tracing::{debug_span, error, info_span, instrument, Level},
 };
 
 /// compile liquid templates, based on input languages
@@ -34,6 +37,9 @@ use {
 #[cfg(feature = "liquid")]
 pub mod liquid;
 
+#[cfg(feature = "minijinja")]
+pub mod minijinja;
+
 /// compile scss/sass stylesheets to css
 ///
 /// requires `scss` feature
@@ -46,7 +52,16 @@ pub mod scss;
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
+pub mod lang;
+
+mod util;
+
 /// the core of dollgen, defines a list of globs to include, a list of globs to exclude, how to transform the file, and where to emit it to
+#[::tyfling::debug(
+	"+ {:?}\n- {:?}\n> \"{dst}\"",
+	include.iter().map(ToString::to_string).collect::<Vec<_>>(),
+	exclude.iter().map(ToString::to_string).collect::<Vec<_>>()
+)]
 pub struct Rule<'a> {
 	/// which files to include
 	///
@@ -58,100 +73,186 @@ pub struct Rule<'a> {
 	///
 	/// format specifiers like `{0}` pull from the captures of whatever `include` glob matched (ex: `dist/{0}/{1}.html`)
 	pub dst: &'static str,
-	/// transform an input file to an output file
+	/// plan a transformation
 	///
-	/// takes the input path (matched by an `include`), output path (produced by `dst`), and the captures from the `include` that matched
-	pub transformer: &'a mut dyn FnMut(PathBuf, PathBuf, Vec<String>) -> Result<(), ErrorKind>,
+	/// takes the input path (matched by an `include`), and the captures from the `include` that matched
+	///
+	/// returns plan data to be passed into `execute`
+	pub plan: &'a mut dyn FnMut(
+		PathBuf,
+		Vec<String>,
+	) -> Result<Box<dyn PlannedTransformation>, ErrorKind>,
 }
 
-/// the main function, which takes the rules and searches files, transforming them when they match a rule
+/// a planned transformation that can be `execute`d
 ///
-/// rules are parsed in order, so the first rule will always take precedent if it matches
-pub fn run(rules: &mut [Rule<'_>]) -> Result<(), Error> {
+/// this trait can be downcasted to access the internal plan (this is useful for those that want to plan transformations and peek/modify them before executing)
+pub trait PlannedTransformation: ::core::fmt::Debug + ::downcast_rs::Downcast {
+	/// executes the planned transformation
+	///
+	/// takes the plan data and output path (produced by `dst`)
+	///
+	/// # Errors
+	///
+	/// if the execution fails
+	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind>;
+}
+
+/// [noop] transformation, does not write to the destination file
+impl PlannedTransformation for () {
+	fn execute(self: Box<Self>, _: PathBuf) -> Result<(), ErrorKind> {
+		Ok(())
+	}
+}
+
+/// writes the binary blob to the destination file
+impl PlannedTransformation for Vec<u8> {
+	#[instrument(skip(self), name = "write binary blob", level = Level::DEBUG)]
+	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind> {
+		fs::write(dst, *self).map_err(ErrorKind::Io)
+	}
+}
+
+/// writes the string to the destination file
+impl PlannedTransformation for String {
+	#[instrument(skip(self), name = "write string data", level = Level::DEBUG)]
+	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind> {
+		fs::write(dst, self.as_bytes()).map_err(ErrorKind::Io)
+	}
+}
+
+/// [copy] transformation, copies the file path specified to the destination file
+impl PlannedTransformation for PathBuf {
+	#[instrument(name = "copy", level = Level::DEBUG)]
+	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind> {
+		fs::copy(*self, dst).map_err(ErrorKind::Io)?;
+		Ok(())
+	}
+}
+
+::downcast_rs::impl_downcast!(PlannedTransformation);
+
+/// a plan to transform a file
+#[derive(Debug)]
+pub struct Plan {
+	/// the destination file
+	pub dst: PathBuf,
+	/// the plan data produced by the `plan` function
+	pub data: Box<dyn PlannedTransformation>,
+}
+
+///
+///
+/// equivalent to `execute(plan(rules)?)`
+pub fn run(rules: &mut [Rule<'_>]) -> Result<(), ErrorKind> {
+	execute(plan(rules)?)
+}
+
+/// plan
+#[instrument(skip(rules))]
+pub fn plan(rules: &mut [Rule<'_>]) -> Result<Vec<Plan>, ErrorKind> {
+	let mut plans = Vec::new();
 	let mut visited = HashSet::new();
 
 	for (rule_index, rule) in rules.iter_mut().enumerate() {
+		let _span = debug_span!("rule", rule_index, ?rule).entered();
+
 		for (include_index, include) in rule.include.iter().enumerate() {
+			let _span =
+				debug_span!("include", include_index, include = include.to_string()).entered();
+
 			for entry in glob_with(
 				include.as_str(),
 				&MatchOptions {
 					case_sensitive: true,
-					require_literal_leading_dot: true,
+					require_literal_leading_dot: false,
 					require_literal_separator: true,
 				},
 			)
-			.map_err(|kind| Error {
-				kind: kind.into(),
-				rule: rule_index,
-				include: include_index,
-				file: None,
+			.map_err(|err| ErrorKind::Pattern {
+				label: [::miette::LabeledSpan::new_primary_with_span(
+					Some(err.msg.to_string()),
+					SourceSpan::new(err.pos.into(), 1),
+				)],
+				src: NamedSource::new(
+					format!("rules[{rule_index}].include[{include_index}]"),
+					include.to_string(),
+				),
 			})? {
-				let entry = entry.map_err(|kind| Error {
-					kind: kind.into(),
-					rule: rule_index,
-					include: include_index,
-					file: None,
-				})?;
+				let entry = entry?;
 				let src_file = entry.path();
 
-				// make sure it isnt excluded an that it hasn't been visited yet
-				if src_file.is_file()
-					&& !visited.contains(src_file)
-					&& rule
-						.exclude
-						.iter()
-						.all(|ignore| !ignore.matches_path(src_file))
-				{
-					// pull captures out into a vec
-					let captures = {
-						let mut captures = Vec::new();
+				// pull captures out into a vec
+				let captures = {
+					let mut captures = Vec::new();
 
-						let mut i = 1; // skip 0, which is just the entire match
-						while let Some(capture) = entry.group(i) {
-							i += 1;
-							captures.push(
-								capture
-									.to_str()
-									.ok_or_else(|| Error {
-										kind: ErrorKind::NonUTF8PathCharacters,
-										rule: rule_index,
-										include: include_index,
-										file: Some(src_file.to_path_buf()),
-									})?
-									.to_string(),
-							);
-						}
+					let mut i = 1; // skip 0, which is just the entire match
+					while let Some(capture) = entry.group(i) {
+						i += 1;
+						captures.push(
+							capture
+								.to_str()
+								.ok_or(ErrorKind::NonUTF8PathCharacters)?
+								.to_string(),
+						);
+					}
 
-						captures
-					};
-					let dst_file = format(rule.dst, &captures).map_err(|kind| Error {
-						kind: kind.into(),
-						rule: rule_index,
-						include: include_index,
-						file: Some(src_file.to_path_buf()),
-					})?;
-					let dst_file = Path::new(&*dst_file);
+					captures
+				};
 
-					// ensure the directory is there
-					fs::create_dir_all(dst_file.parent().unwrap()).map_err(|err| Error {
-						kind: err.into(),
-						rule: rule_index,
-						include: include_index,
-						file: Some(src_file.to_path_buf()),
-					})?;
+				let dst_file = format(rule.dst, &captures)?;
+				let dst_file = Path::new(&*dst_file);
 
-					(rule.transformer)(src_file.to_path_buf(), dst_file.to_path_buf(), captures)
-						.map_err(|kind| Error {
-							kind: kind.into(),
-							rule: rule_index,
-							include: include_index,
-							file: Some(src_file.to_path_buf()),
-						})?;
+				let _span = info_span!(
+					"plan file",
+					src = src_file.to_str().unwrap(),
+					dst = dst_file.to_str().unwrap()
+				)
+				.entered();
 
-					visited.insert(src_file.to_path_buf());
+				// make sure it isnt excluded and that it hasn't been visited yet
+
+				if !src_file.is_file() {
+					error!("skipped (not a file)");
+					continue;
 				}
+
+				if visited.contains(src_file) {
+					error!("skipped (already visited)");
+					continue;
+				}
+
+				if rule.exclude.iter().any(|ignore| {
+					if ignore.matches_path(src_file) {
+						error!("skipped (matched ignore)");
+						true
+					} else {
+						false
+					}
+				}) {
+					continue;
+				}
+
+				plans.push(Plan {
+					dst: dst_file.to_path_buf(),
+					data: (rule.plan)(src_file.to_path_buf(), captures)?,
+				});
+
+				visited.insert(src_file.to_path_buf());
 			}
 		}
+	}
+
+	Ok(plans)
+}
+
+#[instrument(skip(plans))]
+pub fn execute(plans: Vec<Plan>) -> Result<(), ErrorKind> {
+	for plan in plans {
+		// ensure the directory is there
+		fs::create_dir_all(plan.dst.parent().unwrap())?;
+
+		plan.data.execute(plan.dst)?;
 	}
 
 	Ok(())
@@ -175,91 +276,129 @@ pub fn format<T: AsRef<str>>(fmt: &str, captures: &[T]) -> Result<String, ErrorK
 }
 
 /// the most primitive transformer, does absolutely nothing
-pub fn noop(_: PathBuf, _: PathBuf, _: Vec<String>) -> Result<(), ErrorKind> {
-	Ok(())
+#[instrument(level = Level::DEBUG)]
+pub fn noop(_: PathBuf, _: Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	Ok(Box::new(()))
 }
 
 /// a primitive transformer that just [`fs::copy`]'s its input path to its output path
-pub fn copy(src: PathBuf, dst: PathBuf, _: Vec<String>) -> Result<(), ErrorKind> {
-	fs::copy(src, dst)?;
-	Ok(())
-}
-
-/// an error with context
-#[derive(::thiserror::Error, Debug)]
-pub struct Error {
-	/// the actual error that occurred
-	#[source]
-	pub kind: ErrorKind,
-	/// the index of the rule where this error occurred
-	pub rule: usize,
-	/// the index of the include in the rule where this error occurred
-	pub include: usize,
-	/// if available, the specific input file that was being processed when this error occurred
-	pub file: Option<PathBuf>,
-}
-
-impl core::fmt::Display for Error {
-	fn fmt(&self, fmt: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-		write!(fmt, "rule #{}, include #{}", self.rule, self.include)?;
-
-		if let Some(file) = &self.file {
-			write!(fmt, ", file {}", file.to_string_lossy())?;
-		}
-
-		write!(fmt, ": ")?;
-
-		self.kind.fmt(fmt)?;
-
-		writeln!(fmt)
-	}
+#[instrument(level = Level::DEBUG)]
+pub fn copy(src: PathBuf, _: Vec<String>) -> Result<Box<dyn PlannedTransformation>, ErrorKind> {
+	Ok(Box::new(src))
 }
 
 /// an error
-#[derive(::thiserror::Error, Debug)]
+#[derive(::thiserror::Error, ::miette::Diagnostic, Debug)]
 pub enum ErrorKind {
 	/// parsing failure
-	#[error("pattern failed to compile")]
-	Pattern(#[from] ::capturing_glob::PatternError),
+	#[error("pattern failure to compile")]
+	#[diagnostic(code(dollgen::glob::bad_pattern))]
+	Pattern {
+		#[label(collection)]
+		label: [::miette::LabeledSpan; 1],
+		#[source_code]
+		src: ::miette::NamedSource<String>,
+	},
 
 	/// searching failure
-	#[error("glob failed")]
-	Glob(#[from] ::capturing_glob::GlobError),
-
-	/// filesystem failure
-	#[error(transparent)]
-	Io(#[from] ::std::io::Error),
-
-	/// a path contained non-utf8 characters
-	#[error("non-utf8 path characters")]
-	NonUTF8PathCharacters,
+	#[error("glob failure")]
+	#[diagnostic(code(dollgen::glob::failure))]
+	Glob(
+		#[source]
+		#[from]
+		::capturing_glob::GlobError,
+	),
 
 	/// an error while formatting a format-string
-	#[error("failed to parse format string")]
-	Format(#[from] ::strfmt::FmtError),
+	#[error("failure to parse format string")]
+	#[diagnostic(code(dollgen::format_str))]
+	Format(
+		#[source]
+		#[from]
+		::strfmt::FmtError,
+	),
 
 	/// liquid integration failure
 	///
 	/// requires `liquid` feature
 	#[cfg(feature = "liquid")]
-	#[error("liquid integration failed")]
-	LiquidIntegration(#[from] liquid::LiquidErrorKind),
+	#[error("liquid integration failure")]
+	#[diagnostic(code(dollgen::liquid))]
+	LiquidIntegration(
+		#[source]
+		#[from]
+		liquid::LiquidErrorKind,
+	),
+
+	/// minijinja integration failure
+	///
+	/// requires `minijinja` feature
+	#[cfg(feature = "minijinja")]
+	#[error("minijinja integration failure")]
+	#[diagnostic(code(dollgen::minijinja))]
+	MinijinjaIntegration(
+		#[source]
+		#[from]
+		minijinja::MinijinjaErrorKind,
+	),
 
 	/// scss integration failure
 	///
 	/// requires `scss` feature
 	#[cfg(feature = "scss")]
-	#[error("scss integration failed")]
-	SCSSIntegration(#[from] ::grass::Error),
+	#[error("scss integration failure")]
+	#[diagnostic(code(dollgen::scss))]
+	SCSSIntegration {
+		/// the section of the source that failure
+		#[label(collection)]
+		span: [::miette::LabeledSpan; 1],
+		/// the source file that failure
+		#[source_code]
+		src: ::miette::NamedSource<String>,
+	},
 
 	/// wasm integration failure
 	///
 	/// requires `wasm` feature
 	#[cfg(feature = "wasm")]
-	#[error("wasm integration failed")]
-	WASMIntegration(#[from] wasm::WASMErrorKind),
+	#[error("wasm integration failure")]
+	#[diagnostic(code(dollgen::wasm))]
+	WASMIntegration(
+		#[source]
+		#[from]
+		wasm::WASMErrorKind,
+	),
+
+	/// template source lang failure
+	#[error("template source lang failure")]
+	#[diagnostic(code(dollgen::lang))]
+	Lang(
+		#[source]
+		#[from]
+		lang::LangErrorKind,
+	),
+
+	/// filesystem failure
+	#[error("fs error")]
+	#[diagnostic(code(dollgen::io))]
+	Io(
+		#[source]
+		#[from]
+		::std::io::Error,
+	),
+
+	/// a path contained non-utf8 characters
+	#[error("non-utf8 path characters")]
+	#[diagnostic(code(dollgen::io::non_utf8_path))]
+	NonUTF8PathCharacters,
+
+	/// a file contained non-utf8 characters
+	#[error("non-utf8 content")]
+	#[diagnostic(code(dollgen::io::non_utf8_content))]
+	NonUTF8Characters,
 
 	/// something else
-	#[error(transparent)]
-	Other(::anyhow::Error),
+	#[error("other")]
+	#[diagnostic(transparent)]
+	Other(#[source] Box<dyn Diagnostic + Send + Sync>),
 }

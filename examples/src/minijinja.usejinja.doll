@@ -1,0 +1,8 @@
+---
+[props]
+title = "index"
+---
+
+this is the root page
+
+[img(./button.png):MADE WITH MARKDOLL]
