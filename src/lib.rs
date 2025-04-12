@@ -87,7 +87,7 @@ pub struct Rule<'a> {
 /// a planned transformation that can be `execute`d
 ///
 /// this trait can be downcasted to access the internal plan (this is useful for those that want to plan transformations and peek/modify them before executing)
-pub trait PlannedTransformation: ::core::fmt::Debug + ::downcast_rs::Downcast {
+pub trait PlannedTransformation: ::core::any::Any + ::core::fmt::Debug {
 	/// executes the planned transformation
 	///
 	/// takes the plan data and output path (produced by `dst`)
@@ -129,8 +129,6 @@ impl PlannedTransformation for PathBuf {
 		Ok(())
 	}
 }
-
-::downcast_rs::impl_downcast!(PlannedTransformation);
 
 /// a plan to transform a file
 #[derive(Debug)]

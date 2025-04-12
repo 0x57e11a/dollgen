@@ -20,7 +20,6 @@ miette = "7.4.0"
 anyhow = "1.0.93"
 tracing = "0.1.41"
 tyfling = "0.1.2"
-downcast-rs = "1.2.1"
 
 serde = { version = "1.0.214", features = ["derive"], optional = true }
 toml = { version = "0.8.19", optional = true }
