@@ -1,5 +1,5 @@
 target
-dist
+deploy
 gen_types
 
 .devenv*
