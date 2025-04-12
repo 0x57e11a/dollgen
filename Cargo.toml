@@ -1,6 +1,6 @@
 [package]
 name = "dollgen"
-version = "0.3.0"
+version = "0.4.0"
 authors = ["0x57e11a"]
 edition = "2021"
 description = "an unopinionated and extensible Static Site Generator, natively supporting liquid, markdoll, scss, and compiling rust to wasm"
@@ -10,7 +10,6 @@ rust-version = "1.86"
 license = "MIT"
 keywords = ["web", "ssg", "wasm", "webassembly", "text"]
 categories = ["web-programming", "wasm"]
-publish = false # todo
 
 [dependencies]
 capturing-glob = "0.1.1"
