@@ -23,6 +23,8 @@ struct ManifestPackage {
 
 #[instrument(level = Level::TRACE)]
 fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorKind> {
+	let start = SystemTime::now();
+
 	let src_dir = manifest.parent().unwrap();
 
 	let crate_name = ::toml::from_str::<Manifest>(
@@ -83,24 +85,28 @@ fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorK
 
 		let _trace_span = trace_span!("wasm-bindgen", ?input, ?bindgen_target).entered();
 
-		let mut bindgen = Bindgen::new();
+		if fs::metadata(&input)?.modified()? >= start {
+			let mut bindgen = Bindgen::new();
 
-		bindgen
-			.out_name(&crate_name)
-			.input_path(input.to_str().ok_or(ErrorKind::NonUTF8PathCharacters)?)
-			.web(true)
-			.map_err(WASMErrorKind::BindgenFailed)?
-			.debug(!release)
-			.keep_debug(!release)
-			.typescript(true);
+			bindgen
+				.out_name(&crate_name)
+				.input_path(input.to_str().ok_or(ErrorKind::NonUTF8PathCharacters)?)
+				.web(true)
+				.map_err(WASMErrorKind::BindgenFailed)?
+				.debug(!release)
+				.keep_debug(!release)
+				.typescript(true);
 
-		bindgen
-			.generate(
-				bindgen_target
-					.to_str()
-					.ok_or(ErrorKind::NonUTF8PathCharacters)?,
-			)
-			.map_err(|err| WASMErrorKind::BindgenFailed(err.into()))?;
+			bindgen
+				.generate(
+					bindgen_target
+						.to_str()
+						.ok_or(ErrorKind::NonUTF8PathCharacters)?,
+				)
+				.map_err(|err| WASMErrorKind::BindgenFailed(err.into()))?;
+		} else {
+			error!("skipped (compiled wasm didn't change)");
+		}
 	}
 
 	Ok((target_dir.join("bindgen"), crate_name))
