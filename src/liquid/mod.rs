@@ -1,3 +1,19 @@
+//! compile liquid templates, based on input languages
+//!
+//! languages parse their source code and may provide a frontmatter string, which is parsed as TOML:
+//!
+//! - `template` (optional)
+//!   - if `template.local` is true:
+//!     - if `template.path` is defined, that template is used, and the path is assumed to be relative to the directory containing the source file
+//!     - if `template.path` is not defined, it uses the template with the same name as the source file (ex: `page.doll` will use `page.liquid` in the same directory)
+//!   - if `template.local` is false or not specified:
+//!     - if `template.path` is defined, that template is used, and the path is assumed to be relative to the root of the build
+//!     - if `template.path` is not defined, the default template is used
+//! - `props` (optional)
+//!   - values are fed into the liquid template
+//!
+//! requires `liquid` feature
+
 use {
 	crate::{util::with_added_extension_but_stable, ErrorKind, PlannedTransformation},
 	::core::cell::RefCell,
@@ -15,7 +31,7 @@ use {
 
 pub extern crate liquid;
 
-/// parses and cahces liquid templates
+/// parses and caches liquid templates
 ///
 /// ensure to [`clear_cache`](Liquid::clear_cache) in case templates change
 pub struct Liquid {
@@ -87,8 +103,10 @@ pub fn default_globals(_: PathBuf, props: Option<Object>, body: String) -> Objec
 /// a plan to render a liquid template
 #[::tyfling::debug(.globals)]
 pub struct LiquidPlan {
-	template: Rc<Template>,
-	globals: Object,
+	/// the template
+	pub template: Rc<Template>,
+	/// the globals
+	pub globals: Object,
 }
 
 impl PlannedTransformation for LiquidPlan {

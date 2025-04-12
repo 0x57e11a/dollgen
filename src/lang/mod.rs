@@ -1,12 +1,11 @@
+//! source languages for templating rules
+
 use {
 	crate::ErrorKind,
 	::core::cell::RefCell,
 	::std::{path::Path, rc::Rc},
 };
 
-/// [markdoll](https://codeberg.org/0x57e11a/markdoll) support
-///
-/// requires `lang-markdoll` feature
 #[cfg(feature = "lang-markdoll")]
 pub mod markdoll;
 

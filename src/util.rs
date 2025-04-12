@@ -3,6 +3,7 @@ use ::std::{
 	path::{Path, PathBuf},
 };
 
+#[allow(unused, reason = "used with some features")]
 pub fn with_added_extension_but_stable(path: &Path, extension: impl AsRef<OsStr>) -> PathBuf {
 	let mut new = path.extension().unwrap_or_default().to_os_string();
 	if path.extension().is_some() {

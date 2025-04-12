@@ -1,3 +1,7 @@
+//! [markdoll](https://codeberg.org/0x57e11a/markdoll) support
+//!
+//! requires `lang-markdoll` feature
+
 use {
 	crate::{lang::LangErrorKind, ErrorKind},
 	::core::fmt::Debug,

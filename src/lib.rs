@@ -19,36 +19,15 @@ use {
 	::tracing::{debug_span, error, info_span, instrument, Level},
 };
 
-/// compile liquid templates, based on input languages
-///
-/// languages parse their source code and may provide a frontmatter string, which is parsed as TOML:
-///
-/// - `template` (optional)
-///   - if `template.local` is true:
-///     - if `template.path` is defined, that template is used, and the path is assumed to be relative to the directory containing the source file
-///     - if `template.path` is not defined, it uses the template with the same name as the source file (ex: `page.doll` will use `page.liquid` in the same directory)
-///   - if `template.local` is false or not specified:
-///     - if `template.path` is defined, that template is used, and the path is assumed to be relative to the root of the build
-///     - if `template.path` is not defined, the default template is used
-/// - `props` (optional)
-///   - values are fed into the liquid template
-///
-/// requires `liquid` feature
 #[cfg(feature = "liquid")]
 pub mod liquid;
 
 #[cfg(feature = "minijinja")]
 pub mod minijinja;
 
-/// compile scss/sass stylesheets to css
-///
-/// requires `scss` feature
 #[cfg(feature = "scss")]
 pub mod scss;
 
-/// compile rust source code libraries to wasm files with an accompanying javascript file to load them
-///
-/// requires `wasm` feature
 #[cfg(feature = "wasm")]
 pub mod wasm;
 
@@ -98,7 +77,7 @@ pub trait PlannedTransformation: ::core::any::Any + ::core::fmt::Debug {
 	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind>;
 }
 
-/// [noop] transformation, does not write to the destination file
+/// [`noop`] transformation, does not write to the destination file
 impl PlannedTransformation for () {
 	fn execute(self: Box<Self>, _: PathBuf) -> Result<(), ErrorKind> {
 		Ok(())
@@ -121,7 +100,7 @@ impl PlannedTransformation for String {
 	}
 }
 
-/// [copy] transformation, copies the file path specified to the destination file
+/// [`copy`] transformation, copies the file path specified to the destination file
 impl PlannedTransformation for PathBuf {
 	#[instrument(name = "copy", level = Level::DEBUG)]
 	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind> {
@@ -139,14 +118,12 @@ pub struct Plan {
 	pub data: Box<dyn PlannedTransformation>,
 }
 
-///
-///
 /// equivalent to `execute(plan(rules)?)`
 pub fn run(rules: &mut [Rule<'_>]) -> Result<(), ErrorKind> {
 	execute(plan(rules)?)
 }
 
-/// plan
+/// plan some transformations
 #[instrument(skip(rules))]
 pub fn plan(rules: &mut [Rule<'_>]) -> Result<Vec<Plan>, ErrorKind> {
 	let mut plans = Vec::new();
@@ -244,6 +221,7 @@ pub fn plan(rules: &mut [Rule<'_>]) -> Result<Vec<Plan>, ErrorKind> {
 	Ok(plans)
 }
 
+/// execute some plans
 #[instrument(skip(plans))]
 pub fn execute(plans: Vec<Plan>) -> Result<(), ErrorKind> {
 	for plan in plans {
@@ -292,8 +270,10 @@ pub enum ErrorKind {
 	#[error("pattern failure to compile")]
 	#[diagnostic(code(dollgen::glob::bad_pattern))]
 	Pattern {
+		/// the error labels
 		#[label(collection)]
 		label: [::miette::LabeledSpan; 1],
+		/// the source data
 		#[source_code]
 		src: ::miette::NamedSource<String>,
 	},

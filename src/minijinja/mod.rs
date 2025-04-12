@@ -1,11 +1,25 @@
+//! compile jinja templates, based on input languages
+//!
+//! languages parse their source code and may provide a frontmatter string, which is parsed as TOML:
+//!
+//! - `template` (optional)
+//!   - if `template.local` is true:
+//!     - if `template.path` is defined, that template is used, and the path is assumed to be relative to the directory containing the source file
+//!     - if `template.path` is not defined, it uses the template with the same name as the source file (ex: `page.doll` will use `page.jinja` in the same directory)
+//!   - if `template.local` is false or not specified:
+//!     - if `template.path` is defined, that template is used, and the path is assumed to be relative to the root of the build
+//!     - if `template.path` is not defined, the default template is used
+//! - `props` (optional)
+//!   - values are fed into the jinja template
+//!
+//! requires `minijinja` feature
+
 use {
 	crate::{util::with_added_extension_but_stable, ErrorKind, PlannedTransformation},
 	::core::cell::RefCell,
-	::hashbrown::{hash_map::EntryRef, HashMap},
-	::minijinja::{context, Environment, Template, Value},
-	::serde::{Deserialize, Serialize},
+	::minijinja::{context, Environment, Value},
+	::serde::Deserialize,
 	::std::{
-		ffi::OsStr,
 		fs::{self, OpenOptions},
 		path::{Path, PathBuf},
 		rc::Rc,
@@ -37,15 +51,19 @@ pub fn default_globals(_: PathBuf, props: Option<Value>, body: String) -> Value 
 	}
 }
 
+/// a plan to render a jinja template
 #[::tyfling::debug(.globals)]
 pub struct MinijinjaPlan {
+	/// environment to use
 	pub env: Rc<RefCell<Environment<'static>>>,
+	/// template name
 	pub template: String,
+	/// the globals
 	pub globals: Value,
 }
 
 impl PlannedTransformation for MinijinjaPlan {
-	#[instrument(, name = "render liquid template", level = Level::DEBUG)]
+	#[instrument(skip(self), name = "render jinja template", level = Level::DEBUG)]
 	fn execute(self: Box<Self>, dst: PathBuf) -> Result<(), ErrorKind> {
 		self.env
 			.borrow()
@@ -74,6 +92,18 @@ impl PlannedTransformation for MinijinjaPlan {
 	}
 }
 
+/// compile jinja templates + a source language
+///
+/// - `default_template` - the template to use when not overridden by a given source file
+/// - `env` - a shared cell of the minijinja environment
+/// - `globals` - the globals to use in templating
+///   - takes the source file path, props from frontmatter, and compiled content from `lang`
+///   - returns the globals
+///   
+///   if you don't have a purpose for this, you should probably set it to [`default_globals`]
+/// - `lang` - the source language to parse
+///   - takes the content of the source file
+///   - returns (frontmatter (unparsed), content)
 pub fn create_templated(
 	default_template: PathBuf,
 	env: Rc<RefCell<Environment<'static>>>,
@@ -123,9 +153,9 @@ pub fn create_templated(
 	}
 }
 
-/// compile liquid templates standalone
+/// compile jinja templates standalone
 ///
-/// - `liquid` - a shared cell of the liquid parser instance
+/// - `env` - a shared cell of the minijinja environment
 /// - `globals` - the globals to use in templating
 ///   - takes the source file path
 ///   - returns the globals
@@ -146,7 +176,7 @@ pub fn create_standalone(
 	}
 }
 
-/// an error while using liquid templating
+/// an error while using jinja templating
 #[derive(::thiserror::Error, ::miette::Diagnostic, Debug)]
 pub enum MinijinjaErrorKind {
 	/// template parsing failed
@@ -161,13 +191,13 @@ pub enum MinijinjaErrorKind {
 
 	/// frontmatter parsing failed
 	#[error("frontmatter parsing failed")]
-	#[diagnostic(code(dollgen::liquid::frontmatter_parse_failed))]
+	#[diagnostic(code(dollgen::minijinja::frontmatter_parse_failed))]
 	FrontmatterParsing(#[source] ::toml::de::Error),
 
 	/// frontmatter requests a local template, but provides an absolute path
 	#[error("frontmatter requests a local template, but provides an absolute path")]
 	#[diagnostic(
-		code(dollgen::liquid::frontmatter_absolute_local_path),
+		code(dollgen::minijinja::frontmatter_absolute_local_path),
 		help("either change to a relative path or remove the local attribute")
 	)]
 	FrontmatterAbsoluteLocalPath(PathBuf),

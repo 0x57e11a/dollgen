@@ -1,3 +1,7 @@
+//! compile scss/sass stylesheets to css
+//!
+//! requires `scss` feature
+
 use {
 	crate::{ErrorKind, PlannedTransformation},
 	::grass::{from_path, Options},

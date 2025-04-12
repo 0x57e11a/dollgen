@@ -1,3 +1,7 @@
+//! compile rust source code libraries to wasm files with an accompanying javascript file to load them
+//!
+//! requires `wasm` feature
+
 use {
 	crate::{format, ErrorKind, PlannedTransformation},
 	::convert_case::Casing,
@@ -6,8 +10,9 @@ use {
 		fs,
 		path::{Path, PathBuf},
 		process::Command,
+		time::SystemTime,
 	},
-	::tracing::{debug_span, instrument, trace, trace_span, Level},
+	::tracing::{debug_span, error, instrument, trace, trace_span, Level},
 	::wasm_bindgen_cli_support::Bindgen,
 };
 
@@ -112,18 +117,34 @@ fn compile(manifest: PathBuf, release: bool) -> Result<(PathBuf, String), ErrorK
 	Ok((target_dir.join("bindgen"), crate_name))
 }
 
+/// a plan to finish compiling a wasm module
 #[derive(Debug)]
 pub struct WASMPlan {
+	/// the directory the bindgen files emitted to
 	pub bindgen_dir: PathBuf,
+	/// the name of the crate
 	pub crate_name: String,
+	/// the kind of plan
 	pub kind: WASMPlanKind,
 }
 
+/// the kind of plan
 #[derive(Debug)]
 pub enum WASMPlanKind {
-	Wasm { js: PathBuf },
+	/// just .wasm module
+	Wasm {
+		/// the .js destination
+		js: PathBuf,
+	},
+	/// just .d.ts declarations
 	TypescriptDeclarations,
-	Both { js: PathBuf, d_ts: PathBuf },
+	/// both [WASMPlanKind::Wasm] and [WASMPlanKind::TypescriptDeclarations]
+	Both {
+		/// the .js destination
+		js: PathBuf,
+		/// the .d.ts destination
+		d_ts: PathBuf,
+	},
 }
 
 impl PlannedTransformation for WASMPlan {
@@ -171,7 +192,7 @@ impl PlannedTransformation for WASMPlan {
 /// compile rust libraries to wasm and include bindings
 ///
 /// - `release` - whether to compile in release mode
-/// - `js` - the [format string](crate::format) to use to determine where to put the js binding file,
+/// - `js` - the [`format string`](crate::format) to use to determine where to put the js binding file,
 ///   ultimately you should be importing this in your javascript code
 ///
 /// [see module-level documentation for help](crate::wasm)
