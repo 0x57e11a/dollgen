@@ -11,9 +11,10 @@ pub extern crate hashbrown;
 pub extern crate markdoll;
 
 /// language support for markdoll
-pub fn create<To: Debug + Into<String> + 'static>(
-	mut doll: MarkDoll,
+pub fn create<Ctx, To: Debug + Into<String> + 'static>(
+	mut doll: MarkDoll<Ctx>,
 	to: impl Fn(&Path) -> To,
+	ctx: impl Fn(&Path) -> Ctx,
 ) -> impl for<'a> FnMut(&'a str, &'a Path) -> Result<(String, String), ErrorKind> {
 	fn diag_beh(diagnostics: Vec<DiagnosticKind>, spanner: &Arc<Spanner<MarkDollSrc>>) -> usize {
 		let mut n = 0;
@@ -36,17 +37,19 @@ pub fn create<To: Debug + Into<String> + 'static>(
 				.ok_or(ErrorKind::NonUTF8PathCharacters)?
 				.to_string(),
 			src.to_string(),
+			None,
 		);
 
 		if ok {
 			let mut to = to(path);
+			let mut ctx = ctx(path);
 
-			let (emit_ok, mut emit_diagnostics) = doll.emit(&mut ast, &mut to);
+			let (emit_ok, mut emit_diagnostics) = doll.emit(&mut ast, &mut to, &mut ctx);
 
 			diagnostics.append(&mut emit_diagnostics);
 
 			let n = diag_beh(diagnostics, &doll.finish());
-			if emit_ok {
+			if emit_ok && n == 0 {
 				Ok((frontmatter.unwrap_or_default(), to.into()))
 			} else {
 				Err(ErrorKind::Lang(LangErrorKind::Markdoll(n)))
