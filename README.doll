@@ -1,58 +1,56 @@
-&dollgen
-	dollgen is a relatively simple Static Site Generator, intended to be unbiased towards what you choose to write your site in
-	(by default, it doesn't have [em:any] language-specific features)
-	
-	&rules
-		the core of dollgen is simple, define rules with the following:
-		-	included paths[ref(glob)]
-		-	excluded paths[ref(glob)]
-		-	output path[ref(format)] (recieves captures from the include glob that matched)
-		-	transformer the reads the input file and writes the output file
-			-	the most basic transformer is [code:copy], literally defined as
-				[codeblock(rust)::
-					pub fn copy(src: PathBuf, dst: PathBuf, _: Vec<String>) -> Result<(), ErrorKind> {
-						fs::copy(src, dst)?;
-						Ok(())
-					}
-				]
-			-	others may be created yourself or found in the [em:integrations] section
+dollgen is a relatively simple Static Site Generator, intended to be unbiased towards what you choose to write your site in
+(by default, it doesn't have [em:any] language-specific features)
+
+&rules
+	the core of dollgen is simple, define rules with the following:
+	-	included paths[ref(glob)]
+	-	excluded paths[ref(glob)]
+	-	output path[ref(format)] (recieves captures from the include glob that matched)
+	-	transformer that reads the input file and generates a plan to be executed
 		
-		although it's *recommended* to use [code:src/] for input files and [code:dist/] for output files,
-		dollgen does not care what directories you use, and will automatically create directories up to whatever
-		output path that a rule specifies
+		may be created oneself or found in the integrations section
+	
+	although it's *recommended* to use [code:src/] for input files and [code:dist/] for output files,
+	dollgen does not care what directories you use, and will automatically create directories up to whatever
+	output path that a rule specifies
 
-		[def(glob)::
-			globs follow the syntax of [link(https://crates.io/crates/capturing-glob):capturing-glob]
-			
-			all paths are relative to the current working directory
-		]
+	[def(glob)::
+		globs follow the syntax of [link(https://crates.io/crates/capturing-glob):capturing-glob]
+		
+		all paths are relative to the current working directory
+	]
 
-		[def(format)::
-			format strings follow a similar syntax to rust's format strings, but simpler
+	[def(format)::
+		format strings follow a similar syntax to rust's format strings, but simpler
 
-			given a list of captures, [code:{n}] is replaced with the [code:n]-th capture
+		given a list of captures, [code:{n}] is replaced with the [code:n]-th capture
 
-			given rule with an include [code:src/(**)/(*).draft.*)],
-			matching path [code:src/blog/itsfirstblog.draft.doll],
-			format string [code:dist/{0}/{1}.html]
-			would produce [code:dist/blog/itsfirstblog.html]
-		]
+		given rule with an include [code:src/(**)/(*).draft.*)],
+		matching path [code:src/blog/itsfirstblog.draft.doll],
+		format string [code:dist/{0}/{1}.html]
+		would produce [code:dist/blog/itsfirstblog.html]
+	]
 
-	&integrations
-		read more about integrations in their individual modules
+&integrations
+	read more about integrations in their individual modules
 
-		currently present
+	currently present
+	-	templating languages
 		-	[link(https://docs.rs/dollgen/latest/dollgen/liquid/):liquid]
 			(feature: [code:liquid], support for [link(https://shopify.github.io/liquid/):the liquid templating language])
-			-	[link(https://docs.rs/dollgen/latest/dollgen/liquid/markdoll/):liquid]
-				(feature: [code:liquid-markdoll], support for [link(https://github.com/0x57e11a/markdoll):the markdoll language], tied into liquid)
+		-	[link(https://docs.rs/dollgen/latest/dollgen/minijinja/):minijinja]
+			(feature: [code:minijinja], support for the jinja templating language via [link(https://github.com/mitsuhiko/minijinja):minijinja])
+	-	source languages to be used in templates
+		-	[link(https://docs.rs/dollgen/latest/dollgen/lang/markdoll/):markdoll]
+			(feature: [code:lang-markdoll], support for [link(https://codeberg.org/0x57e11a/markdoll):the markdoll language])
+	-	misc
 		-	[link(https://docs.rs/dollgen/latest/dollgen/scss/):scss]
 			(feature: [code:scss], support for [link(https://sass-lang.com/documentation/syntax/):the scss/sass stylesheet languages])
 		-	[link(https://docs.rs/dollgen/latest/dollgen/wasm/):wasm]
 			(feature: [code:wasm], support for compiling rust libs to [link(https://webassembly.org/):webassembly modules], via [link(https://github.com/rustwasm/wasm-bindgen):wasm_bindgen])
 
-		planned
-		-	markdown
-		-	maybe MDX?
-		-	maybe reStructuredText? (if it wants to subject itself to that?)
-		-	at this point just make an issue for what you want
+	planned
+	-	markdown
+	-	maybe MDX?
+	-	maybe reStructuredText? (if it wants to subject itself to that?)
+	-	at this point just make an issue for what you want
